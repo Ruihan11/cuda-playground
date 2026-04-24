@@ -1,0 +1,10 @@
+[build]
+arch = "sm_100"
+std = "c++17"
+extra_flags = ["-O3"]
+
+[input]
+n = 1048576
+
+[profile]
+kernel_name_regex = "softmax"

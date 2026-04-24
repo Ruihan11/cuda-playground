@@ -1,0 +1,17 @@
+[build]
+arch = "sm_100"
+std = "c++17"
+extra_flags = ["-O3"]
+
+[correctness]
+max_error = 1e-5
+mean_error = 1e-6
+dtype = "float32"
+
+[input]
+# 2^26 floats = 256 MB total (3 arrays: a, b, c).
+# Large enough to saturate HBM bandwidth on B200.
+n = 67108864
+
+[profile]
+kernel_name_regex = "vecsum"
