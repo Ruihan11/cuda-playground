@@ -6,4 +6,5 @@
 reports/
 *.so
 *debug
+temp/*
 
