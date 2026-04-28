@@ -1,0 +1,7 @@
+[build]
+arch = "sm_100"
+std = "c++17"
+extra_flags = ["-O3"]
+
+[profile]
+kernel_name_regex = "fa2_kernel"

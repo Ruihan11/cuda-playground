@@ -1,6 +1,6 @@
 /*
- * nvcc -g -G -O0 -o temp/atten_debug kernels/atten/v1_naive_atten.cu
- * */
+nvcc -g -G -O0 -o temp/atten_debug kernels/atten/v1_naive_atten.cu
+*/
 #include <cuda_runtime.h>
 #include <float.h>
 #include <stdio.h>
@@ -9,17 +9,17 @@
 #define CEIL_DIV(x, y) (((x) + (y) - 1) / (y))
 
 __global__ void qk_matmul(const float *Q, const float *K, float *output,
-                          const int batch, const int heads, const int seq,
-                          const int dimension) {
+                          const int64_t batch, const int heads, const int seq,
+                          const int64_t dimension) {
 
-  int b = blockIdx.x / heads;
-  int h = blockIdx.x % heads;
-  int i = blockIdx.y;
-  int j = blockIdx.z;
+  int64_t b = blockIdx.x / heads;
+  int64_t h = blockIdx.x % heads;
+  int64_t i = blockIdx.y;
+  int64_t j = blockIdx.z;
   float scale = 1.0f / sqrtf((float)dimension);
 
   float acc = 0.0f;
-  for (int k = 0; k < dimension; k++) {
+  for (int64_t k = 0; k < dimension; k++) {
     acc += Q[b * heads * seq * dimension + h * seq * dimension + i * dimension +
              k] *
            K[b * heads * seq * dimension + h * seq * dimension + j * dimension +
@@ -30,16 +30,16 @@ __global__ void qk_matmul(const float *Q, const float *K, float *output,
 }
 
 __global__ void sv_matmul(const float *S, const float *V, float *output,
-                          const int batch, const int heads, const int seq,
-                          const int dimension) {
+                          const int64_t batch, const int heads, const int seq,
+                          const int64_t dimension) {
 
-  int b = blockIdx.x / heads;
-  int h = blockIdx.x % heads;
-  int i = blockIdx.y;
-  int j = blockIdx.z;
+  int64_t b = blockIdx.x / heads;
+  int64_t h = blockIdx.x % heads;
+  int64_t i = blockIdx.y;
+  int64_t j = blockIdx.z;
 
   float acc = 0.0f;
-  for (int k = 0; k < seq; k++) {
+  for (int64_t k = 0; k < seq; k++) {
     acc += S[b * heads * seq * seq + h * seq * seq + i * seq + k] *
            V[b * heads * seq * dimension + h * seq * dimension + k * dimension +
              j];
@@ -48,18 +48,18 @@ __global__ void sv_matmul(const float *S, const float *V, float *output,
   output[b * heads * seq * dimension + h * seq * dimension + i * dimension +
          j] = acc;
 }
-__global__ void tiled_scan(const float *input, const int rows, const int cols,
-                           float *max_val, float *exp_sum) {
+__global__ void tiled_scan(const float *input, const int64_t rows,
+                           const int cols, float *max_val, float *exp_sum) {
   __shared__ float s_max[256];
   __shared__ float s_sum[256];
-  int tid = threadIdx.x;
-  int row = blockIdx.x;
-  int pid = row * cols + tid;
+  int64_t tid = threadIdx.x;
+  int64_t row = blockIdx.x;
+  int64_t pid = row * cols + tid;
   s_max[tid] = (tid < cols) ? input[pid] : -FLT_MAX;
   s_sum[tid] = (tid < cols) ? 1.0f : 0.0f;
   __syncthreads();
 
-  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+  for (int64_t stride = blockDim.x / 2; stride > 0; stride >>= 1) {
     if (tid < stride) {
       float m_new = fmaxf(s_max[tid], s_max[tid + stride]);
       s_sum[tid] = s_sum[tid] * expf(s_max[tid] - m_new) +
@@ -74,27 +74,27 @@ __global__ void tiled_scan(const float *input, const int rows, const int cols,
   }
 }
 
-__global__ void tiled_softmax(const float *input, const int rows,
-                              const int cols, float *max_val, float *exp_sum,
-                              float *output) {
-  int tid = threadIdx.x;
-  int row = blockIdx.x;
-  int pid = row * cols + tid;
+__global__ void tiled_softmax(const float *input, const int64_t rows,
+                              const int64_t cols, float *max_val,
+                              float *exp_sum, float *output) {
+  int64_t tid = threadIdx.x;
+  int64_t row = blockIdx.x;
+  int64_t pid = row * cols + tid;
   if (tid < cols) {
     output[pid] = expf(input[pid] - max_val[row]) / exp_sum[row];
   }
 }
 int main() {
 
-  int batch = 1, heads = 1, seq = 4, d = 4;
+  int64_t batch = 1, heads = 1, seq = 4, d = 4;
   float *h_q = (float *)malloc(batch * heads * seq * d * sizeof(float));
   float *h_k = (float *)malloc(batch * heads * seq * d * sizeof(float));
   float *h_v = (float *)malloc(batch * heads * seq * d * sizeof(float));
   float *output = (float *)malloc(batch * heads * seq * d * sizeof(float));
-  for (int i = 0; i < batch; i++) {
-    for (int j = 0; j < heads; j++) {
-      for (int k = 0; k < seq; k++) {
-        for (int l = 0; l < d; l++) {
+  for (int64_t i = 0; i < batch; i++) {
+    for (int64_t j = 0; j < heads; j++) {
+      for (int64_t k = 0; k < seq; k++) {
+        for (int64_t l = 0; l < d; l++) {
           h_q[i * heads * seq * d + j * seq * d + k * d + l] = float(1);
           h_k[i * heads * seq * d + j * seq * d + k * d + l] = float(1);
           h_v[i * heads * seq * d + j * seq * d + k * d + l] = float(1);
@@ -104,7 +104,7 @@ int main() {
   }
 
   float *d_q, *d_k, *d_v, *d_s, *d_o, *d_r, *max_val, *exp_sum;
-  int softmax_rows = batch * heads * seq;
+  int64_t softmax_rows = batch * heads * seq;
   cudaMalloc(&d_q, batch * heads * seq * d * sizeof(float));
   cudaMalloc(&d_k, batch * heads * seq * d * sizeof(float));
   cudaMalloc(&d_v, batch * heads * seq * d * sizeof(float));
@@ -134,14 +134,14 @@ int main() {
   cudaDeviceSynchronize();
   cudaMemcpy(output, d_r, batch * heads * seq * d * sizeof(float),
              cudaMemcpyDeviceToHost);
-  printf("%f\n", output[0]);
-  printf("%f\n", output[1]);
+  // printf("%f\n", output[0]);
+  // printf("%f\n", output[1]);
   cudaFree(d_q);
   cudaFree(d_k);
   cudaFree(d_v);
   cudaFree(d_s);
   cudaFree(d_o);
-  cudaFree(d_v);
+  cudaFree(d_r);
   cudaFree(max_val);
   cudaFree(exp_sum);
 
@@ -149,10 +149,10 @@ int main() {
 }
 
 extern "C" void atten_launch(const float *q, const float *k, const float *v,
-                             float *result, const int batch, const int heads,
-                             const int seq, const int d) {
+                             float *result, const int64_t batch,
+                             const int heads, const int64_t seq, const int d) {
   float *d_q, *d_k, *d_v, *d_s, *d_o, *d_r, *max_val, *exp_sum;
-  int softmax_rows = batch * heads * seq;
+  int64_t softmax_rows = batch * heads * seq;
   cudaMalloc(&d_q, batch * heads * seq * d * sizeof(float));
   cudaMalloc(&d_k, batch * heads * seq * d * sizeof(float));
   cudaMalloc(&d_v, batch * heads * seq * d * sizeof(float));
@@ -192,19 +192,44 @@ extern "C" void atten_launch(const float *q, const float *k, const float *v,
   cudaFree(exp_sum);
 }
 
+static void run_kernels(const float *d_q, const float *d_k, const float *d_v,
+                        float *d_s, float *d_o, float *d_r, float *max_val,
+                        float *exp_sum, int64_t batch, int heads, int seq,
+                        int d) {
+  int64_t softmax_rows = batch * heads * seq;
+  dim3 grid(batch * heads, seq, seq), block(1, 1, 1);
+  qk_matmul<<<grid, block>>>(d_q, d_k, d_s, batch, heads, seq, d);
+  tiled_scan<<<softmax_rows, 256>>>(d_s, softmax_rows, seq, max_val, exp_sum);
+  tiled_softmax<<<softmax_rows, 256>>>(d_s, softmax_rows, seq, max_val, exp_sum,
+                                       d_o);
+  dim3 sv_grid(batch * heads, seq, d);
+  sv_matmul<<<sv_grid, block>>>(d_o, d_v, d_r, batch, heads, seq, d);
+}
+
+// q, k, v, result must be device pointers (allocated by caller)
 extern "C" float benchmark_launch(const float *q, const float *k,
                                   const float *v, float *result,
-                                  const int batch, const int heads,
-                                  const int seq, const int d, int warmup,
-                                  int iters) {
-  for (int i = 0; i < warmup; i++)
-    atten_launch(q, k, v, result, batch, heads, seq, d);
+                                  const int64_t batch, const int heads,
+                                  const int64_t seq, const int d, int warmup,
+                                  int64_t iters) {
+  int64_t softmax_rows = batch * heads * seq;
+  float *d_s, *d_o, *max_val, *exp_sum;
+  cudaMalloc(&d_s, batch * heads * seq * seq * sizeof(float));
+  cudaMalloc(&d_o, batch * heads * seq * seq * sizeof(float));
+  cudaMalloc(&max_val, softmax_rows * sizeof(float));
+  cudaMalloc(&exp_sum, softmax_rows * sizeof(float));
+
+  for (int64_t i = 0; i < warmup; i++)
+    run_kernels(q, k, v, d_s, d_o, result, max_val, exp_sum, batch, heads, seq,
+                d);
+
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
   cudaEventRecord(start);
-  for (int i = 0; i < iters; i++)
-    atten_launch(q, k, v, result, batch, heads, seq, d);
+  for (int64_t i = 0; i < iters; i++)
+    run_kernels(q, k, v, d_s, d_o, result, max_val, exp_sum, batch, heads, seq,
+                d);
   cudaEventRecord(stop);
   cudaEventSynchronize(stop);
 
@@ -212,5 +237,9 @@ extern "C" float benchmark_launch(const float *q, const float *k,
   cudaEventElapsedTime(&ms, start, stop);
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
+  cudaFree(d_s);
+  cudaFree(d_o);
+  cudaFree(max_val);
+  cudaFree(exp_sum);
   return ms / iters;
 }
