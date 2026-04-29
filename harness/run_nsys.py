@@ -125,9 +125,10 @@ def main(
         else:
             any_failed = True
             print(f"FAILED ({status})")
-            err = result.get("error", "")
-            if err:
-                print(f"    {err[:300].strip()}")
+            for key in ("error", "stdout"):
+                msg = result.get(key, "").strip()
+                if msg:
+                    print(f"  [{key}]\n{msg[:800]}")
 
     if any_failed:
         raise SystemExit(1)

@@ -1,8 +1,9 @@
 """
-nvcc -shared -Xcompiler -fPIC -O3 -o temp/v1_atten.so kernels/atten/v1_naive_atten.cu -Wno-deprecated-gpu-targets
-nvcc -shared -Xcompiler -fPIC -O3 -o temp/v2_atten.so kernels/atten/v2_fa2.cu -Wno-deprecated-gpu-targets
-nvcc -shared -Xcompiler -fPIC -O3 -o temp/v3_atten.so kernels/atten/v3_tiled_fa2.cu -Wno-deprecated-gpu-targets
-nvcc -shared -Xcompiler -fPIC -O3 -o temp/v4_atten.so kernels/atten/v4_warpReduce_fa2.cu -Wno-deprecated-gpu-targets
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_89 -o temp/v1_atten.so kernels/atten/v1_naive_atten.cu -Wno-deprecated-gpu-targets
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_89 -o temp/v2_atten.so kernels/atten/v2_fa2.cu -Wno-deprecated-gpu-targets
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_89 -o temp/v3_atten.so kernels/atten/v3_tiled_fa2.cu -Wno-deprecated-gpu-targets
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_89 -o temp/v4_atten.so kernels/atten/v4_half_fa2.cu -Wno-deprecated-gpu-targets
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_89 -o temp/v5_atten.so kernels/atten/v5_wmma_fa2.cu -Wno-deprecated-gpu-targets
 """
 
 import torch
@@ -15,9 +16,9 @@ def ptr(t: torch.Tensor) -> ctypes.POINTER(ctypes.c_float):
     return ctypes.cast(t.data_ptr(), ctypes.POINTER(ctypes.c_float))
 
 
-def kernel_validation(path: str):
-    torch.manual_seed(42)
-    batch, heads, seq, d = 10, 10, 128, 64
+def kernel_validation(path: str, dtype: torch.dtype = torch.float32):
+    torch.manual_seed(666)
+    batch, heads, seq, d = 2, 16, 512, 128
     Q = torch.randn(batch, heads, seq, d, dtype=torch.float32)
     K = torch.randn(batch, heads, seq, d, dtype=torch.float32)
     V = torch.randn(batch, heads, seq, d, dtype=torch.float32)
@@ -34,12 +35,10 @@ def kernel_validation(path: str):
         ctypes.c_int64
     ] * 4
 
-    Q_c, K_c, V_c = (
-        Q.float().contiguous().cpu(),
-        K.float().contiguous().cpu(),
-        V.float().contiguous().cpu(),
-    )
-    cuda_out = torch.zeros_like(Q_c)
+    Q_c = Q.to(dtype).contiguous().cpu()
+    K_c = K.to(dtype).contiguous().cpu()
+    V_c = V.to(dtype).contiguous().cpu()
+    cuda_out = torch.zeros(batch, heads, seq, d, dtype=dtype)
     lib.atten_launch(
         ptr(Q_c),
         ptr(K_c),
@@ -64,6 +63,7 @@ def benchmark(
     heads: int,
     seq: int,
     d: int,
+    dtype: torch.dtype = torch.float32,
     warmup: int = 10,
     iters: int = 100,
 ) -> float:
@@ -72,9 +72,9 @@ def benchmark(
     lib.benchmark_launch.argtypes = [ctypes.POINTER(ctypes.c_float)] * 4 + [
         ctypes.c_int64
     ] * 6
-    Q = torch.randn(batch, heads, seq, d).cuda().contiguous()
-    K = torch.randn(batch, heads, seq, d).cuda().contiguous()
-    V = torch.randn(batch, heads, seq, d).cuda().contiguous()
+    Q = torch.randn(batch, heads, seq, d).to(dtype).cuda().contiguous()
+    K = torch.randn(batch, heads, seq, d).to(dtype).cuda().contiguous()
+    V = torch.randn(batch, heads, seq, d).to(dtype).cuda().contiguous()
     out = torch.zeros_like(Q)
     return lib.benchmark_launch(
         ptr(Q),
@@ -109,13 +109,16 @@ def benchmark_sdp(fn, warmup=10, iters=100):
     return start.elapsed_time(end) / iters
 
 
-def run_validation(versions: dict[str, str]):
-    for name, path in versions.items():
+def run_validation(versions: dict[str, tuple[str, torch.dtype]]):
+    for name, (path, dtype) in versions.items():
         print(f"{name}: ", end="")
-        kernel_validation(path)
+        kernel_validation(path, dtype)
 
 
-def run_benchmark(versions: dict[str, str], configs: list[tuple[int, int, int, int]]):
+def run_benchmark(
+    versions: dict[str, tuple[str, torch.dtype]],
+    configs: list[tuple[int, int, int, int]],
+):
 
     ver_names = list(versions.keys())
 
@@ -132,8 +135,8 @@ def run_benchmark(versions: dict[str, str], configs: list[tuple[int, int, int, i
         row = f"{seq:>6}  {d:>4}"
         flops = 4 * batch * heads * seq * seq * d
 
-        for path in versions.values():
-            ms = benchmark(path, batch, heads, seq, d)
+        for path, dtype in versions.values():
+            ms = benchmark(path, batch, heads, seq, d, dtype)
             if ms <= 0:
                 row += f"  {col('OOM')}"
             else:
@@ -157,17 +160,20 @@ def run_benchmark(versions: dict[str, str], configs: list[tuple[int, int, int, i
 
 def main():
     versions = {
-        # "v1": "temp/v1_atten.so",
-        # "v2": "temp/v2_atten.so",
-        "v3": "temp/v3_atten.so",
-        "v4": "temp/v4_atten.so",
+        # "v1": ("temp/v1_atten.so", torch.float32),
+        # "v2": ("temp/v2_atten.so", torch.float32),
+        # "v3": ("temp/v3_atten.so", torch.float32),
+        "v4": ("temp/v4_atten.so", torch.float16),
+        "v5": ("temp/v5_atten.so", torch.float16),
     }
 
     configs = [
+        (2, 16, 128, 128),
+        (2, 16, 256, 128),
         (2, 16, 512, 128),
-        # (2, 16, 1024, 128),
-        # (2, 16, 2048, 128),
-        # (2, 16, 4096, 128),
+        (2, 16, 1024, 128),
+        (2, 16, 2048, 128),
+        (2, 16, 4096, 128),
     ]
 
     run_validation(versions)

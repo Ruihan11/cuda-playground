@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Modal-based CUDA kernel profiling harness targeting B200 (sm_100). Used daily for GPU kernel engineering study. Primary workflow: write kernel → profile on B200 → fetch `.ncu-rep` → analyze in Nsight Compute UI.
+A Modal-based CUDA kernel profiling harness targeting RTX5090 (local, sm_120) + H200 (Modal, sm_90). Used daily for GPU kernel engineering study. Primary workflow: write kernel → profile on H200 → fetch `.ncu-rep` → analyze in Nsight Compute UI.
 
 ## Working Mode
 

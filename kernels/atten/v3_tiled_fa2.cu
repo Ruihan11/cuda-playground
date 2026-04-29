@@ -9,7 +9,7 @@ nvcc -g -G -O0 -o temp/atten_debug kernels/atten/v3_tiled_fa2_atten.cu
 #define CEIL_DIV(x, y) (((x) + (y) - 1) / (y))
 #define Br 32
 #define Bc 32
-#define D 64
+#define D 128
 
 __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
                            float *output, const int64_t batch,
@@ -80,7 +80,7 @@ __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
 
 int main() {
 
-  int64_t batch = 1, heads = 1, seq = 32, d = 64;
+  int64_t batch = 2, heads = 16, seq = 1024, d = 128;
   float scale = 1.0f / sqrt(float(d));
   float *h_q = (float *)malloc(batch * heads * seq * d * sizeof(float));
   float *h_k = (float *)malloc(batch * heads * seq * d * sizeof(float));

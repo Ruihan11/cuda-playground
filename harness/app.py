@@ -3,7 +3,7 @@ import modal
 APP_NAME = "kernel-profiling-harness"
 REPORTS_PATH = "/reports"
 KERNELS_PATH = "/workspace/kernels"
-GPU_TYPE = "B200:1"
+GPU_TYPE = "H200:1"
 
 app = modal.App(APP_NAME)
 

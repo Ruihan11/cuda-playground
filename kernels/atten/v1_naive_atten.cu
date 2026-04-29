@@ -50,13 +50,20 @@ __global__ void sv_matmul(const float *S, const float *V, float *output,
 }
 __global__ void tiled_scan(const float *input, const int64_t rows,
                            const int cols, float *max_val, float *exp_sum) {
+
   __shared__ float s_max[256];
   __shared__ float s_sum[256];
   int64_t tid = threadIdx.x;
   int64_t row = blockIdx.x;
-  int64_t pid = row * cols + tid;
-  s_max[tid] = (tid < cols) ? input[pid] : -FLT_MAX;
-  s_sum[tid] = (tid < cols) ? 1.0f : 0.0f;
+  float local_max = -FLT_MAX, local_sum = 0.0f;
+  for (int64_t c = tid; c < cols; c += blockDim.x) {
+    float val = input[row * cols + c];
+    float m_new = fmaxf(local_max, val);
+    local_sum = local_sum * expf(local_max - m_new) + expf(val - m_new);
+    local_max = m_new;
+  }
+  s_max[tid] = local_max;
+  s_sum[tid] = local_sum;
   __syncthreads();
 
   for (int64_t stride = blockDim.x / 2; stride > 0; stride >>= 1) {
@@ -79,11 +86,12 @@ __global__ void tiled_softmax(const float *input, const int64_t rows,
                               float *exp_sum, float *output) {
   int64_t tid = threadIdx.x;
   int64_t row = blockIdx.x;
-  int64_t pid = row * cols + tid;
-  if (tid < cols) {
-    output[pid] = expf(input[pid] - max_val[row]) / exp_sum[row];
+  for (int64_t c = tid; c < cols; c += blockDim.x) {
+    int64_t idx = row * cols + c;
+    output[idx] = expf(input[idx] - max_val[row]) / exp_sum[row];
   }
 }
+
 int main() {
 
   int64_t batch = 1, heads = 1, seq = 4, d = 4;

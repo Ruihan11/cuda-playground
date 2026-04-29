@@ -9,7 +9,7 @@ nvcc -g -G -O0 -o temp/atten_debug kernels/atten/v4_warpReduce_fa2.cu
 #define CEIL_DIV(x, y) (((x) + (y) - 1) / (y))
 #define Br 32
 #define Bc 32
-#define D 64
+#define D 128
 
 __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
                            float *output, const int64_t batch,
@@ -31,11 +31,13 @@ __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
   float m = -FLT_MAX;
   float l = 0.0f;
   bool valid = (row < seq);
-  float o0 = 0.0f, o1 = 0.0f;
+  float o0 = 0.0f, o1 = 0.0f, o2 = 0.0f, o3 = 0.0f;
 
-  float q_reg[2];
+  float q_reg[4];
   q_reg[0] = Q[b * stride_b + h * stride_h + row * stride_s + threadIdx.x];
   q_reg[1] = Q[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 32];
+  q_reg[2] = Q[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 64];
+  q_reg[3] = Q[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 96];
 
   for (int64_t j = 0; j < seq / Bc; j++) {
 
@@ -59,7 +61,9 @@ __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
           break;
 
         float partial = q_reg[0] * s_K[jj][threadIdx.x] +
-                        q_reg[1] * s_K[jj][threadIdx.x + 32];
+                        q_reg[1] * s_K[jj][threadIdx.x + 32] +
+                        q_reg[2] * s_K[jj][threadIdx.x + 64] +
+                        q_reg[3] * s_K[jj][threadIdx.x + 96];
         for (int mask = 16; mask > 0; mask >>= 1)
           partial += __shfl_xor_sync(0xffffffff, partial, mask);
 
@@ -74,6 +78,9 @@ __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
         // O_i^new = diag(e^(m_i - m_i_new)) * O_i + e^(S_ij - m_i_new) @ V_j
         o0 = decay * o0 + weight * s_V[jj][threadIdx.x];
         o1 = decay * o1 + weight * s_V[jj][threadIdx.x + 32];
+        o2 = decay * o2 + weight * s_V[jj][threadIdx.x + 64];
+        o3 = decay * o3 + weight * s_V[jj][threadIdx.x + 96];
+
         m = m_new;
         l = l_new;
       }
@@ -85,6 +92,10 @@ __global__ void fa2_kernel(const float *Q, const float *K, const float *V,
     output[b * stride_b + h * stride_h + row * stride_s + threadIdx.x] = o0 / l;
     output[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 32] =
         o1 / l;
+    output[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 64] =
+        o2 / l;
+    output[b * stride_b + h * stride_h + row * stride_s + threadIdx.x + 96] =
+        o3 / l;
   }
 }
 
