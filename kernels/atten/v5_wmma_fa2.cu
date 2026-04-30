@@ -12,7 +12,7 @@ using namespace nvcuda::wmma;
 
 #define CEIL_DIV(x, y) (((x) + (y) - 1) / (y))
 #define Br 64
-#define Bc 32
+#define Bc 64
 #define D 128
 
 __global__ void fa2_kernel(const __half *Q, const __half *K, const __half *V,
