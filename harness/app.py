@@ -18,7 +18,7 @@ cuda_image = (
         "nvidia/cuda:13.0.0-devel-ubuntu24.04",
         add_python="3.12",
     )
-    .apt_install("wget", "gnupg")
+    .apt_install("wget", "gnupg", "clang")
     .run_commands(
         "wget -qO- https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/3bf863cc.pub"
         " | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg",
@@ -34,4 +34,11 @@ cuda_image = (
         "torch",
         extra_index_url="https://download.pytorch.org/whl/cu130",
     )
+    .pip_install("flash-attn-4", pre=True)
+)
+
+tk_image = (
+    cuda_image
+    .pip_install("tilelang==0.1.9")
+    .pip_install("tile-kernels", "pytest", "pytest-xdist", "pytest-repeat")
 )

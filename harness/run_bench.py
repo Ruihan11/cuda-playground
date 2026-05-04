@@ -146,6 +146,105 @@ def bench_sdpa(configs: list, warmup: int, iters: int) -> dict:
     return {"status": "ok", "results": results}
 
 
+def _time_attn_fn(fn, warmup: int, iters: int) -> float:
+    import torch
+
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        fn()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        g.replay()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iters
+
+
+@app.function(image=_image, gpu=GPU_TYPE, timeout=300)
+def bench_fa(configs: list, warmup: int, iters: int) -> dict:
+    import torch
+
+    try:
+        from flash_attn import flash_attn_func
+    except ImportError as e:
+        return {"status": "error", "error": str(e)}
+
+    results = []
+    for batch, heads, seq, d in configs:
+        # flash_attn expects (batch, seqlen, nheads, headdim)
+        Q = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+        K = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+        V = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+
+        ms = _time_attn_fn(lambda: flash_attn_func(Q, K, V), warmup, iters)
+        flops = 4 * batch * heads * seq * seq * d
+        tflops = flops / (ms * 1e-3) / 1e12
+        results.append({"seq": seq, "d": d, "ms": float(ms), "tflops": tflops})
+
+    return {"status": "ok", "results": results}
+
+
+@app.function(image=_image, gpu=GPU_TYPE, timeout=300)
+def bench_fa4(configs: list, warmup: int, iters: int) -> dict:
+    import torch
+
+    try:
+        from flash_attn.cute import flash_attn_func
+    except ImportError as e:
+        return {"status": "error", "error": str(e)}
+
+    results = []
+    for batch, heads, seq, d in configs:
+        Q = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+        K = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+        V = torch.randn(batch, seq, heads, d, dtype=torch.float16, device="cuda")
+
+        ms = _time_attn_fn(lambda: flash_attn_func(Q, K, V), warmup, iters)
+        flops = 4 * batch * heads * seq * seq * d
+        tflops = flops / (ms * 1e-3) / 1e12
+        results.append({"seq": seq, "d": d, "ms": float(ms), "tflops": tflops})
+
+    return {"status": "ok", "results": results}
+
+
+@app.local_entrypoint()
+def baselines(warmup: int = 10, iters: int = 100):
+    fa4_fut = bench_fa4.remote(_DEFAULT_CONFIGS, warmup, iters)
+    sdpa_fut = bench_sdpa.remote(_DEFAULT_CONFIGS, warmup, iters)
+
+    def col(s):
+        return f"{s:>14}"
+
+    header = f"{'seq':>6}  {'d':>4}  " + "  ".join(
+        col(n) for n in ["fa4 TF/s", "sdpa TF/s"]
+    )
+    print(f"\n{header}\n{'-' * len(header)}")
+
+    rows: dict[tuple, dict] = {}
+    for label, fut in [("fa4", fa4_fut), ("sdpa", sdpa_fut)]:
+        r = fut
+        if r["status"] != "ok":
+            print(f"  {label}: FAILED — {r.get('error', '')[:200]}")
+            continue
+        for entry in r["results"]:
+            rows.setdefault((entry["seq"], entry["d"]), {})[label] = entry["tflops"]
+
+    for _, _, seq, d in _DEFAULT_CONFIGS:
+        vals = rows.get((seq, d), {})
+        row = f"{seq:>6}  {d:>4}"
+        for label in ["fa4", "sdpa"]:
+            v = vals.get(label)
+            row += f"  {col(f'{v:.4f}' if v else 'FAILED')}"
+        print(row)
+
+
 @app.local_entrypoint()
 def main(
     kernel: str,
@@ -163,17 +262,18 @@ def main(
     def col(s):
         return f"{s:>13}"
 
-    all_cols = version_list + ["sdpa"]
+    all_cols = version_list + ["sdpa", "fa4"]
     header = f"{'seq':>6}  {'d':>4}  " + "  ".join(col(v) for v in all_cols)
     sep = "-" * len(header)
 
-    # launch all in parallel — kernel versions + sdpa
+    # launch all in parallel
     futures = {
         version: bench_single.remote(
             kernel, version, _DEFAULT_CONFIGS, warmup, iters, dtype
         )
         for version in version_list
     }
+    fa4_future = bench_fa4.remote(_DEFAULT_CONFIGS, warmup, iters)
     sdpa_future = bench_sdpa.remote(_DEFAULT_CONFIGS, warmup, iters)
 
     all_results: dict[tuple, dict[str, float]] = {}
@@ -186,13 +286,13 @@ def main(
             key = (r["seq"], r["d"])
             all_results.setdefault(key, {})[version] = r["tflops"]
 
-    sdpa_result = sdpa_future
-    if sdpa_result["status"] == "ok":
-        for r in sdpa_result["results"]:
-            key = (r["seq"], r["d"])
-            all_results.setdefault(key, {})["sdpa"] = r["tflops"]
-    else:
-        print(f"  sdpa: FAILED")
+    for label, result in [("fa4", fa4_future), ("sdpa", sdpa_future)]:
+        if result["status"] == "ok":
+            for r in result["results"]:
+                key = (r["seq"], r["d"])
+                all_results.setdefault(key, {})[label] = r["tflops"]
+        else:
+            print(f"  {label}: FAILED ({result.get('error', '')[:200]})")
 
     print(header)
     print(sep)

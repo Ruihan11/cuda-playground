@@ -1,4 +1,4 @@
-* __pycache__/
+__pycache__/
 .venv/
 *.ncu-rep
 *.nsys-rep
@@ -7,4 +7,4 @@ reports/
 *.so
 *debug
 temp/*
-
+submodule/*

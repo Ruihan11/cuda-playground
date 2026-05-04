@@ -90,6 +90,48 @@ def nsys_single(
     }
 
 
+@app.function(image=_image, volumes={REPORTS_PATH: volume}, gpu=GPU_TYPE, timeout=600)
+def nsys_fa4(timestamp: str, trace: str) -> dict:
+    import glob
+
+    report_dir = Path(REPORTS_PATH) / "atten" / timestamp
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "fa4"
+
+    nsys_candidates = glob.glob("/opt/nvidia/nsight-systems/*/bin/nsys")
+    nsys = sorted(nsys_candidates)[-1] if nsys_candidates else "nsys"
+
+    nsys_cmd = [
+        nsys, "profile",
+        "--output", str(report_path),
+        "--force-overwrite", "true",
+        "--trace", trace,
+        "--export", "sqlite",
+        "python", f"{KERNELS_PATH}/atten/fa4_bench.py",
+    ]
+    r = subprocess.run(nsys_cmd, capture_output=True, text=True)
+    volume.commit()
+
+    report_file = Path(str(report_path) + ".nsys-rep")
+    if r.returncode != 0 or not report_file.exists():
+        return {"status": "nsys_error", "error": r.stderr, "stdout": r.stdout}
+    return {"status": "ok", "report_bytes": report_file.read_bytes()}
+
+
+@app.local_entrypoint()
+def fa4(trace: str = "cuda,nvtx,osrt"):
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    result = nsys_fa4.remote(timestamp, trace)
+    if result["status"] == "ok":
+        local_path = Path(f"reports/atten/{timestamp}/fa4.nsys-rep")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(result["report_bytes"])
+        print(f"ok → {local_path}")
+    else:
+        print("FAILED")
+        print(result.get("error", "")[:800])
+
+
 @app.local_entrypoint()
 def main(
     kernel: str,

@@ -17,16 +17,19 @@ A Modal-based CUDA kernel profiling harness targeting RTX5090 (local, sm_120) + 
 kernel-profiling-harness/
 ├── harness/
 │   ├── app.py          # Modal app, image, volume — single source of truth for config
-│   ├── profile.py      # @app.local_entrypoint + remote profile_single function
-│   └── compare.py      # (M2) multi-version summary generation
+│   ├── run_ncu.py      # ncu profiling entrypoint
+│   ├── run_nsys.py     # nsys timeline entrypoint
+│   └── run_bench.py    # H200 benchmark: hand-rolled versions + sdpa + FA4
 ├── kernels/
 │   └── {kernel_name}/
 │       ├── kernel.toml     # build config, correctness thresholds, input spec
 │       ├── {version}.cu    # CUDA kernel with standalone main()
 │       ├── {version}.py    # (alt) PyTorch / Triton kernel
-│       └── reference.py    # (M3) reference impl + generate_input(**kwargs)
+│       ├── reference.py    # (M3) reference impl + generate_input(**kwargs)
+│       └── run_local.py    # per-kernel local validation + benchmark (ctypes)
 ├── scripts/
 │   └── fetch_reports.sh    # wraps `modal volume get`
+├── temp/                   # compiled .so files — gitignored
 ├── reports/                # local synced reports — gitignored
 ├── Progress.md
 └── CLAUDE.md
@@ -38,7 +41,7 @@ kernel-profiling-harness/
 - Base: `nvidia/cuda:13.0.0-devel-ubuntu24.04` (has nvcc, cuda-gdb)
 - ncu installed separately via apt (`nsight-compute-2026.x.x`) because devel image ncu may be stale or not support sm_100
 - ncu binary path: `glob("/opt/nvidia/nsight-compute/*/ncu")` — do NOT hardcode
-- GPU type: `"B200:1"` (not `modal.gpu.B200()`)
+- GPU type: `"H200:1"` (not `modal.gpu.H200()`) — B200 dropped
 
 ### kernels/ mounting
 - Use `image.add_local_dir("kernels", remote_path=KERNELS_PATH)` — `modal.Mount` was removed in Modal 1.x
@@ -82,16 +85,27 @@ See Progress.md.
 ## Common Commands
 
 ```bash
-# Profile (ncu)
+# Profile (ncu) — hand-rolled .cu kernels
 modal run harness/run_ncu.py --kernel vecsum --versions v1_naive --mode quick
 modal run harness/run_ncu.py --kernel softmax --versions v1_naive,v2_online --mode quick
+
+# Profile FA4 specifically (Python kernel, uses --target-processes all internally)
+modal run harness/run_ncu.py::fa4 --mode quick
 
 # Profile (nsys)
 modal run harness/run_nsys.py --kernel vecsum --versions v1_naive
 
-# Local correctness test
-nvcc -shared -Xcompiler -fPIC -O3 -o softmax.so kernels/softmax/v1_softmax_naive.cu
-python kernels/softmax/ref_kernel.py
+# Benchmark hand-rolled versions vs sdpa vs fa4 on H200
+modal run harness/run_bench.py --kernel atten --versions v4_half_fa2,v5_wmma_fa2
+# Baseline-only (fa4 vs sdpa, no hand-rolled versions)
+modal run harness/run_bench.py::baselines
+
+# Local build (RTX5090, sm_120)
+nvcc -shared -Xcompiler -fPIC -O3 -arch=sm_120 -Wno-deprecated-gpu-targets \
+  -o temp/v5_atten.so kernels/atten/v5_wmma_fa2.cu
+
+# Local validation + benchmark (atten kernel)
+python kernels/atten/run_local.py
 
 # Local debug binary
 nvcc -g -G -O0 -o softmax_debug kernels/softmax/v1_softmax_naive.cu
@@ -100,6 +114,13 @@ cuda-gdb ./softmax_debug
 # Fetch reports
 modal volume ls kernel-profiling-reports
 ```
+
+## CuTe Python Kernels
+
+- Use `@cute.jit` for the launcher, `@cute.kernel` for the GPU kernel
+- Validate via `validate_cute()` in `run_local.py` (not ctypes)
+- Benchmark via `benchmark_sdp()` using CUDA graphs
+- FA4 import: `from flash_attn.cute import flash_attn_func`
 
 ## Kernel Naming Convention
 

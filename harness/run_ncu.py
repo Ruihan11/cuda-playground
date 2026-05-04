@@ -115,6 +115,56 @@ def profile_single(
     }
 
 
+@app.function(image=_image, volumes={REPORTS_PATH: volume}, gpu=GPU_TYPE, timeout=600)
+def ncu_fa4(mode: str, sections: str, timestamp: str) -> dict:
+    import glob
+
+    report_dir = Path(REPORTS_PATH) / "atten" / timestamp
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "fa4"
+
+    ncu = sorted(glob.glob("/opt/nvidia/nsight-compute/*/ncu"))[-1]
+
+    ncu_cmd = [
+        ncu,
+        "--kernel-name", "regex:.*flash_attn.*",
+        "--launch-count", "1",
+        "--import-source", "yes",
+        *_build_ncu_flags(mode, sections),
+        "--export", str(report_path),
+        "--force-overwrite",
+        "--target-processes", "all",
+        "python", f"{KERNELS_PATH}/atten/fa4_bench.py",
+    ]
+    r = subprocess.run(ncu_cmd, capture_output=True, text=True)
+    volume.commit()
+
+    report_file = Path(str(report_path) + ".ncu-rep")
+    if r.returncode != 0 or not report_file.exists():
+        return {"status": "ncu_error", "error": r.stderr, "stdout": r.stdout}
+    return {"status": "ok", "report_bytes": report_file.read_bytes(), "ncu_stdout": r.stdout}
+
+
+@app.local_entrypoint()
+def fa4(mode: str = "quick", sections: str = ""):
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    print(f"mode: {mode}  run id: {timestamp}\n")
+    result = ncu_fa4.remote(mode, sections, timestamp)
+    if result["status"] == "ok":
+        local_path = Path(f"reports/atten/{timestamp}/fa4.ncu-rep")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(result["report_bytes"])
+        print(f"ok → {local_path}")
+        if result.get("ncu_stdout"):
+            print(result["ncu_stdout"][:400])
+    else:
+        print("FAILED")
+        for key in ("error", "stdout"):
+            msg = result.get(key, "").strip()
+            if msg:
+                print(f"[{key}]\n{msg[:800]}")
+
+
 @app.local_entrypoint()
 def main(
     kernel: str,
